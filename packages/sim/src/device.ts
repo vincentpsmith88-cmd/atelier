@@ -41,11 +41,17 @@ async function acquireDevice(
     return null;
   }
   try {
-    const adapter = await navigator.gpu.requestAdapter({
+    let adapter = await navigator.gpu.requestAdapter({
       powerPreference: "high-performance",
     });
     if (!adapter) {
-      unavailableReason = "No suitable WebGPU adapter was found.";
+      adapter = await navigator.gpu.requestAdapter({
+        powerPreference: "low-power",
+      });
+    }
+    if (!adapter) {
+      unavailableReason =
+        "No suitable WebGPU adapter was found for high-performance or low-power requests.";
       return null;
     }
     const missing = missingFeature(adapter.features, required);
@@ -59,6 +65,13 @@ async function acquireDevice(
     });
     cachedDevice = device;
     unavailableReason = null;
+    void device.lost.then((info) => {
+      if (cachedDevice !== device) return;
+      cachedDevice = null;
+      unavailableReason = info.message
+        ? `WebGPU device was lost (${info.reason}): ${info.message}`
+        : `WebGPU device was lost (${info.reason}).`;
+    });
     return device;
   } catch (error: unknown) {
     unavailableReason = `WebGPU device request failed: ${errorMessage(error)}`;
@@ -103,4 +116,3 @@ export async function requestDevice(
 export function webgpuUnavailableReason(): string | null {
   return environmentReason() ?? unavailableReason;
 }
-

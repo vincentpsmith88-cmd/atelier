@@ -108,5 +108,66 @@ describe("WebGPU acquisition in Node", () => {
     expect(await requestDevice()).toBeNull();
     expect(webgpuUnavailableReason()).toMatch(/WebGPU is not/);
   });
-});
 
+  it("retries adapter acquisition with a low-power preference", async () => {
+    const device = {
+      features: new Set<string>(),
+      lost: new Promise<GPUDeviceLostInfo>(() => undefined),
+    } as unknown as GPUDevice;
+    const requestDeviceMock = vi.fn().mockResolvedValue(device);
+    const adapter = {
+      features: new Set<string>(),
+      requestDevice: requestDeviceMock,
+    } as unknown as GPUAdapter;
+    const requestAdapter = vi.fn()
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(adapter);
+
+    vi.resetModules();
+    vi.stubGlobal("navigator", { gpu: { requestAdapter } });
+    try {
+      const { requestDevice: acquire } = await import("./device");
+      await expect(acquire()).resolves.toBe(device);
+      expect(requestAdapter).toHaveBeenNthCalledWith(1, {
+        powerPreference: "high-performance",
+      });
+      expect(requestAdapter).toHaveBeenNthCalledWith(2, {
+        powerPreference: "low-power",
+      });
+    } finally {
+      vi.unstubAllGlobals();
+      vi.resetModules();
+    }
+  });
+
+  it("discards a lost cached device and acquires a replacement", async () => {
+    let reportLoss!: (info: GPUDeviceLostInfo) => void;
+    const lost = new Promise<GPUDeviceLostInfo>((resolve) => { reportLoss = resolve; });
+    const first = { features: new Set<string>(), lost } as unknown as GPUDevice;
+    const second = { features: new Set<string>(), lost: new Promise<GPUDeviceLostInfo>(() => undefined) } as unknown as GPUDevice;
+    const requestDeviceMock = vi.fn()
+      .mockResolvedValueOnce(first)
+      .mockResolvedValueOnce(second);
+    const adapter = { features: new Set<string>(), requestDevice: requestDeviceMock } as unknown as GPUAdapter;
+
+    vi.resetModules();
+    vi.stubGlobal("navigator", {
+      gpu: { requestAdapter: vi.fn().mockResolvedValue(adapter) },
+    });
+    try {
+      const { requestDevice: acquire, webgpuUnavailableReason: getUnavailableReason } = await import("./device");
+      await expect(acquire()).resolves.toBe(first);
+      reportLoss({ reason: "unknown", message: "GPU reset" } as GPUDeviceLostInfo);
+      await vi.waitFor(() => {
+        expect(getUnavailableReason()).toContain("GPU reset");
+      });
+
+      await expect(acquire()).resolves.toBe(second);
+      await expect(acquire()).resolves.toBe(second);
+      expect(requestDeviceMock).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.unstubAllGlobals();
+      vi.resetModules();
+    }
+  });
+});
